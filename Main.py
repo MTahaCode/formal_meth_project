@@ -16,22 +16,27 @@ code="""
             }
         }
     }
-    assert(arr[0] > arr[1]);
+    assert(arr[0] < arr[1]);
     assert(arr[1] > arr[2]);
 """
 ast=abstract_syntax_tree_parser.parse(code)
-# print(ast)
+print("AST")
+print(ast)
 
 ssa_intermediate_transformer=SSATransformer()
 ssa_ast=ssa_intermediate_transformer.transform_block(ast.children if isinstance(ast,Tree) else ast)
-# print(ssa_ast)
+print("SSA_AST")
+print(ssa_ast)
 
 ssa_gen = SSAPhiCodeGen(unroll=3)
 ssa_final = ssa_gen.gen(ssa_ast)
-# print(ssa_final)
+print("SSA_FINAL")
+print(ssa_final)
 
 translator = SSAtoSMTLib(ssa_final)
 smt2_output = translator.to_smt2()
+print("SMT_OUTPUT")
+print(smt2_output)
 
 with open('output.smt2', 'w') as f:
     f.write(smt2_output)

@@ -146,10 +146,10 @@ class SSATransformer:
                     out.append(r)
         return out
 
-
 class SSAPhiCodeGen:
     def __init__(self, unroll=1):
         self.lines = []
+        self.buffered_asserts = []  # hold assert stmts until after assigns
         self.indent = ""
         self.version = {}
         self.unroll = unroll
@@ -163,8 +163,19 @@ class SSAPhiCodeGen:
         self.lines.append(f"{self.indent}{text}")
 
     def gen(self, stmts):
+        # 1) Generate all non-assert statements first to populate version map
         for s in stmts:
-            self.gen_stmt(s)
+            if s[0] == "assert":
+                self.buffered_asserts.append(s)
+            else:
+                self.gen_stmt(s)
+
+        # 2) Now emit buffered asserts with final versions
+        for stmt in self.buffered_asserts:
+            cond = stmt[1]
+            cond_s = self.gen_expr(cond)
+            self.emit(f"assert({cond_s});")
+
         return "\n".join(self.lines)
 
     def gen_stmt(self, stmt):
@@ -197,8 +208,7 @@ class SSAPhiCodeGen:
                     self.emit(line)
 
         elif kind == "while":
-            cond = stmt[1]
-            body = stmt[2]
+            cond, body = stmt[1], stmt[2]
             self.emit(f"# while {self.gen_expr(cond)}")
             for k in range(self.unroll):
                 self.indent += "  "
@@ -228,18 +238,17 @@ class SSAPhiCodeGen:
                     self.emit(line)
 
         else:
-            self.emit(f"# unsupported: {stmt}")
+            # buffered asserts handled in gen()
+            if stmt[0] != "assert":
+                self.emit(f"# unsupported: {stmt}")
 
     def make_phi(self, block_a, block_b):
         defs = set()
         for b in block_a + block_b:
-            if (isinstance(b, tuple) and b[0] == "assign"
-                    and isinstance(b[1], tuple) and isinstance(b[1][1], str)):
+            if isinstance(b, tuple) and b[0] == "assign":
                 defs.add(b[1][1])
-
         if not defs:
             return ""
-
         lines = []
         for var in sorted(defs):
             v1 = self.last_def(var, block_a)
@@ -251,11 +260,9 @@ class SSAPhiCodeGen:
     def last_def(self, var, block):
         last_ver = None
         for b in block:
-            if (isinstance(b, tuple)
-                    and b[0] == "assign"
-                    and isinstance(b[1], tuple)
-                    and b[1][1] == var):
-                last_ver = self.version.get(var, last_ver)
+            if isinstance(b, tuple) and b[0] == "assign":
+                if b[1][1] == var:
+                    last_ver = self.version.get(var, last_ver)
         return f"{var}_{last_ver or 0}"
 
     def gen_expr(self, expr):
@@ -263,24 +270,28 @@ class SSAPhiCodeGen:
         if kind == "num":
             return str(expr[1])
         if kind == "var":
-            return expr[1]
-
-        # **UPDATED**: render arr_access as `base_idx`
+            base = expr[1]
+            if base in self.version and self.version[base] > 0:
+                return f"{base}_{self.version[base]}"
+            return base
         if kind == "arr_access":
-            base = self.gen_expr(expr[1])
-            idx  = self.gen_expr(expr[2])
-            return f"{base}_{idx}"
-
+            arr_base = expr[1][1]  # e.g., "arr_j"
+            idx_expr = expr[2]
+            idx_str = self.gen_expr(idx_expr)
+            full_name = f"{arr_base}_{idx_str}"
+            # Use latest version
+            if full_name in self.version:
+                return f"{full_name}_{self.version[full_name]}"
+            return full_name
         if kind in ("arith", "cmp", "term"):
             out = self.gen_expr(expr[1])
             for op, e in expr[2]:
                 out = f"{out} {op} {self.gen_expr(e)}"
             return out
-
         if kind == "not":
             return f"!{self.gen_expr(expr[1])}"
         if kind in ("and", "or"):
             op = "&&" if kind == "and" else "||"
             return op.join(self.gen_expr(e) for e in expr[1:])
-
         return "<expr?>"
+
