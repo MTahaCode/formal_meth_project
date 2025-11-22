@@ -114,5 +114,34 @@ class ASTTransformer(Transformer):
     def stmt(self, *args):
         return list(args)
 
+def prefix_variables(ast, prefix="p_"):
+    # Handle Lark Tree at the top
+    if isinstance(ast, Tree):
+        return Tree(ast.data, prefix_variables(ast.children, prefix))
+
+    # Recurse into lists of statements / blocks
+    if isinstance(ast, list):
+        return [prefix_variables(elem, prefix) for elem in ast]
+
+    # Handle each AST node (tuples)
+    if isinstance(ast, tuple):
+        tag = ast[0]
+        if tag == "var":
+            # rename variable
+            return ("var", prefix + ast[1])
+        elif tag == "arr_access":
+            # recurse into both the array name and the index
+            return (
+                "arr_access",
+                prefix_variables(ast[1], prefix),
+                prefix_variables(ast[2], prefix),
+            )
+        else:
+            # generic: map over all children
+            return (tag, *[prefix_variables(elem, prefix) for elem in ast[1:]])
+
+    # Base case: numbers, tokens, etc.
+    return ast
+
 abstract_syntax_tree_parser=Lark(mini_lang_grammar,parser='lalr',transformer=ASTTransformer())
 
